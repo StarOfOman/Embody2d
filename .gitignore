@@ -1,0 +1,19 @@
+/.claude
+node_modules/
+dist/
+dist-ssr/
+*.local
+*.log
+.DS_Store
+.idea
+.vscode
+.env
+
+# TTS model files (large, download at runtime)
+live2d-viewer/tts/*.onnx
+live2d-viewer/tts/*.bin
+live2d-viewer/tts/onnx/
+live2d-viewer/tts/.cache/
+
+# LLM models
+models/*.gguf

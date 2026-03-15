@@ -1,0 +1,11 @@
+FROM nvidia/opengl:1.2-glvnd-runtime-ubuntu22.04
+
+RUN apt-get update && apt-get install -y \
+    chromium-browser ffmpeg xvfb nodejs npm \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY scripts/start-stream.sh ./
+RUN chmod +x start-stream.sh
+EXPOSE 8554
+CMD ["./start-stream.sh"]

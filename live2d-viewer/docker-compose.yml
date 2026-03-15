@@ -1,0 +1,174 @@
+##
+## Live2D Avatar Stack — Unreal_Vtuber Compatible
+##
+## Joins the same vtuber_network and exposes the same ports/APIs
+## as the Unreal pipeline so orchestrators treat it as a compatible node.
+##
+## Create the network first if it doesn't exist:
+##   docker network create vtuber_network
+##
+version: '3.8'
+
+services:
+
+  # ── Frontend: serves the React + PixiJS + Live2D build ───────
+  live2d-frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: vtuber-live2d-frontend
+    ports:
+      - "${VTUBER_FRONTEND_PORT:-3000}:3000"
+    environment:
+      - VITE_WS_URL=ws://live2d-api:4000
+      - VITE_API_URL=http://live2d-api:4000
+    depends_on:
+      - live2d-api
+    networks:
+      - vtuber_network
+    restart: unless-stopped
+
+  # ── API: Express + WebSocket agent control server ────────────
+  live2d-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: vtuber-live2d-api
+    ports:
+      - "${VTUBER_API_PORT:-4000}:4000"
+    environment:
+      - NODE_ENV=production
+      - PORT=4000
+      - LLM_URL=${LLM_URL:-http://vtuber-llama-server:8081}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_MODEL=${LLM_MODEL:-default}
+      - TTS_URL=${TTS_URL:-http://vtuber-kokoro-tts:8880}
+      - TTS_VOICE=${TTS_VOICE:-af_sarah}
+      - TTS_MODEL=${TTS_MODEL:-kokoro}
+      - SYSTEM_PROMPT=${SYSTEM_PROMPT:-You are a friendly avatar assistant. Keep responses concise — 1-3 sentences.}
+    networks:
+      - vtuber_network
+    restart: unless-stopped
+
+  # ── Script Runner + Health Adapters ──────────────────────────
+  # Mirrors Unreal_Vtuber's vtuber-script-runner (:9877)
+  # and orchestrator-health (:9090)
+  live2d-adapters:
+    build:
+      context: .
+      dockerfile: Dockerfile.adapters
+    container_name: vtuber-live2d-adapters
+    ports:
+      - "${VTUBER_SCRIPT_RUNNER_PORT:-9877}:9877"
+      - "${ORCHESTRATOR_HEALTH_PORT:-9090}:9090"
+    environment:
+      - LIVE2D_API_URL=http://live2d-api:4000
+      - RUNNER_API_TOKEN=${RUNNER_API_TOKEN:-}
+      - VTUBER_ALLOWED_ADDRESSES=${VTUBER_ALLOWED_ADDRESSES:-127.0.0.1,::1,172.17.0.1,172.18.0.1}
+      - VTUBER_SESSION_ROOT=/opt/embody/sessions
+      - VTUBER_AUDIO_HOLD_MS=${VTUBER_AUDIO_HOLD_MS:-15000}
+      - MONITORED_SERVICES=vtuber-live2d-frontend,vtuber-live2d-api,vtuber-live2d-streamer,vtuber-kokoro-tts
+      - ORCHESTRATOR_HEALTH_PORT=9090
+      - SCRIPT_RUNNER_PORT=9877
+    depends_on:
+      - live2d-api
+    networks:
+      - vtuber_network
+    restart: unless-stopped
+
+  # ── Streamer: headless Chrome → FFmpeg → RTSP ───────────────
+  live2d-streamer:
+    build:
+      context: .
+      dockerfile: Dockerfile.streamer
+    container_name: vtuber-live2d-streamer
+    ports:
+      - "${VTUBER_STREAM_PORT:-8554}:8554"
+    environment:
+      - DISPLAY=:99
+      - AVATAR_URL=http://live2d-frontend:3000
+      - STREAM_OUT=rtsp://0.0.0.0:8554/live
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    depends_on:
+      - live2d-frontend
+    networks:
+      - vtuber_network
+    restart: unless-stopped
+
+  # ── Kokoro TTS: GPU-accelerated text-to-speech ──────────────
+  # OpenAI-compatible API at /v1/audio/speech
+  # Matches Unreal_Vtuber BYOB pattern — generates the audio bytes
+  kokoro-tts:
+    image: ghcr.io/remsky/kokoro-fastapi-gpu:v0.2.0post4
+    container_name: vtuber-kokoro-tts
+    ports:
+      - "${TTS_PORT:-8880}:8880"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      - NVIDIA_DRIVER_CAPABILITIES=${NVIDIA_DRIVER_CAPABILITIES:-all}
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8880/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - vtuber_network
+    restart: unless-stopped
+
+  # ── LLM: llama.cpp server (matches Unreal_Vtuber's llama service) ──
+  # Uses same image/config as docker-compose.llama.yml in Unreal_Vtuber
+  # Mount your .gguf model into /models/
+  llama-server:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    container_name: vtuber-llama-server
+    ports:
+      - "${LLM_PORT:-8081}:8081"
+    volumes:
+      - ${LLM_MODEL_PATH:-./models}:/models:ro
+    command: >
+      --host 0.0.0.0
+      --port 8081
+      --model /models/${LLM_MODEL_FILE:-model.gguf}
+      --n-gpu-layers 99
+      --ctx-size 2048
+      --threads 2
+      --flash-attn
+      ${LLM_API_KEY:+--api-key ${LLM_API_KEY}}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+        limits:
+          memory: ${LLM_MEMORY_LIMIT:-3g}
+    environment:
+      - NVIDIA_DRIVER_CAPABILITIES=${NVIDIA_DRIVER_CAPABILITIES:-all}
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - vtuber_network
+    restart: unless-stopped
+
+networks:
+  vtuber_network:
+    external: true
+    name: vtuber_network

@@ -1,0 +1,8 @@
+FROM node:18-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm install --omit=dev
+COPY server/ ./server/
+RUN mkdir -p /opt/embody/sessions
+EXPOSE 9877 9090
+CMD ["node", "--experimental-modules", "server/adapters/start.js"]
