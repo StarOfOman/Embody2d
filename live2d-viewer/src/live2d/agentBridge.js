@@ -7,7 +7,6 @@ export function connectAgentBridge(model, avatarId, { onEnvUpdate, onLoadModel }
   const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:4000'
   let ws
 
-  // Lipsync state
   let mouthValue = 0
   let isSpeaking = false
   let lipsyncTimeouts = []
@@ -16,55 +15,86 @@ export function connectAgentBridge(model, avatarId, { onEnvUpdate, onLoadModel }
   const core = internal?.coreModel
   const motionManager = internal?.motionManager
 
-  // Save original startMotion / startRandomMotion so we can block them during speech
-  let origStartMotion = null
-  let origStartRandomMotion = null
+  // Mouth param IDs that motions should NOT control during TTS
+  const MOUTH_IDS = new Set([
+    'ParamMouthOpenY', 'ParamMouthForm', 'PARAM_MOUTH_OPEN_Y', 'PARAM_MOUTH_FORM', 'ParamA',
+  ])
 
-  if (motionManager) {
-    origStartMotion = motionManager.startMotion.bind(motionManager)
-    origStartRandomMotion = motionManager.startRandomMotion.bind(motionManager)
+  // Patch every loaded motion's JSON to strip mouth curves when TTS is active.
+  // We do this by wrapping the motion manager's _startMotion to modify motion data.
+  // But motions are already loaded — so we patch the doUpdateParameters method instead.
+  //
+  // The key insight: CubismMotion.doUpdateParameters reads from this._json.Curves.
+  // We can't easily intercept that. Instead, we use a different approach:
+  //
+  // We override the motion manager's update to save/restore mouth params around it.
+  // The trick is calling saveParameters/loadParameters on the core model.
+  if (motionManager && core) {
+    const origMMUpdate = motionManager.update.bind(motionManager)
 
-    // Block all new motions while speaking
-    motionManager.startMotion = function (...args) {
-      if (isSpeaking) return Promise.resolve(false)
-      return origStartMotion(...args)
-    }
-    motionManager.startRandomMotion = function (...args) {
-      if (isSpeaking) return Promise.resolve(false)
-      return origStartRandomMotion(...args)
+    motionManager.update = function (coreModel, now) {
+      if (!isSpeaking) {
+        return origMMUpdate(coreModel, now)
+      }
+
+      // Save current mouth param values before motion writes
+      const saved = {}
+      MOUTH_IDS.forEach(id => {
+        try {
+          saved[id] = core.getParameterValueById(id)
+        } catch {}
+      })
+
+      // Let motion run (it will overwrite mouth params)
+      const result = origMMUpdate(coreModel, now)
+
+      // Restore mouth params to what they were before motion wrote to them
+      // Then set our lipsync value
+      MOUTH_IDS.forEach(id => {
+        try {
+          if (id.includes('Open') || id === 'ParamA' || id === 'PARAM_MOUTH_OPEN_Y') {
+            core.setParameterValueById(id, mouthValue)
+          } else {
+            // Restore non-open mouth params (like MouthForm) to pre-motion value
+            if (saved[id] !== undefined) core.setParameterValueById(id, saved[id])
+          }
+        } catch {}
+      })
+
+      return result
     }
   }
 
-  // After each frame update, force our lipsync mouth value
-  if (internal) {
-    const origUpdate = internal.update.bind(internal)
-    // Get the real (unpatched) setter from the prototype
-    const realSet = core
-      ? Object.getPrototypeOf(core).setParameterValueById.bind(core)
-      : null
+  // Also override expression manager — expressions also write to mouth params
+  const exprManager = motionManager?.expressionManager
+  if (exprManager && core) {
+    const origExprUpdate = exprManager.update.bind(exprManager)
+    exprManager.update = function (coreModel, now) {
+      if (!isSpeaking) return origExprUpdate(coreModel, now)
 
-    internal.update = function (dt, now) {
-      origUpdate(dt, now)
+      const saved = {}
+      MOUTH_IDS.forEach(id => {
+        try { saved[id] = core.getParameterValueById(id) } catch {}
+      })
 
-      if (isSpeaking && realSet) {
-        realSet('ParamMouthOpenY', mouthValue)
-        try { realSet('PARAM_MOUTH_OPEN_Y', mouthValue) } catch {}
-        try { realSet('ParamA', mouthValue) } catch {}
-      }
+      const result = origExprUpdate(coreModel, now)
+
+      MOUTH_IDS.forEach(id => {
+        try {
+          if (id.includes('Open') || id === 'ParamA' || id === 'PARAM_MOUTH_OPEN_Y') {
+            core.setParameterValueById(id, mouthValue)
+          } else if (saved[id] !== undefined) {
+            core.setParameterValueById(id, saved[id])
+          }
+        } catch {}
+      })
+
+      return result
     }
   }
 
   function startSpeaking() {
     isSpeaking = true
-    // Stop any currently playing motion so it doesn't keep writing params
-    if (motionManager) {
-      // Stop all motion layers
-      try {
-        for (let i = 0; i < 8; i++) {
-          motionManager.stopAllMotions?.()
-        }
-      } catch {}
-    }
   }
 
   function stopSpeaking() {
@@ -99,7 +129,6 @@ export function connectAgentBridge(model, avatarId, { onEnvUpdate, onLoadModel }
           const interval = 1000 / fps
 
           clearLipsyncTimeouts()
-          startSpeaking()
           mouthValue = amplitudes[0] || 0
 
           amplitudes.forEach((amp, i) => {
@@ -108,7 +137,7 @@ export function connectAgentBridge(model, avatarId, { onEnvUpdate, onLoadModel }
           })
 
           const endT = setTimeout(() => {
-            stopSpeaking()
+            mouthValue = 0
           }, amplitudes.length * interval)
           lipsyncTimeouts.push(endT)
           break
@@ -141,12 +170,17 @@ export function connectAgentBridge(model, avatarId, { onEnvUpdate, onLoadModel }
 
   connect()
 
-  return () => {
-    clearLipsyncTimeouts()
-    stopSpeaking()
-    if (ws) {
-      ws.onclose = null
-      ws.close()
-    }
+  return {
+    disconnect: () => {
+      clearLipsyncTimeouts()
+      stopSpeaking()
+      if (ws) {
+        ws.onclose = null
+        ws.close()
+      }
+    },
+    startSpeaking,
+    stopSpeaking,
+    setMouthValue: (v) => { mouthValue = v },
   }
 }

@@ -9,11 +9,11 @@ window.PIXI = PIXI
 const API_URL = import.meta.env.VITE_API_URL || ''
 
 const MODELS = [
-  { id: 'haru',    name: 'Haru',    path: '/models/Haru/haru_greeter_t03.model3.json', panRate: 0.30, voice: 'af_bella' },
-  { id: 'hiyori',  name: 'Hiyori',  path: '/models/Hiyori/Hiyori.model3.json',         panRate: 0.30, voice: 'af_sarah' },
-  { id: 'mark',    name: 'Mark',    path: '/models/Mark/Mark.model3.json',              panRate: 0.1,  voice: 'am_puck' },
-  { id: 'natori',  name: 'Natori',  path: '/models/Natori/Natori.model3.json',          panRate: 0.30, voice: 'am_michael' },
-  { id: 'wanko',   name: 'Wanko',   path: '/models/Wanko/Wanko.model3.json',            panRate: 0.005, voice: 'am_adam' },
+  { id: 'haru',    name: 'Haru',    path: '/models/Haru/haru_greeter_t03.model3.json', panRate: 0.30, voice: 'af_bella', ttsProvider: 'elevenlabs', elevenLabsVoiceId: 'emSmWzY0c0xtx5IFMCVv' },
+  { id: 'hiyori',  name: 'Hiyori',  path: '/models/Hiyori/Hiyori.model3.json',         panRate: 0.30, voice: 'af_sarah', ttsProvider: 'elevenlabs', elevenLabsVoiceId: 'a5zfmqTslZJBP0jutmVY' },
+  { id: 'mark',    name: 'Mark',    path: '/models/Mark/Mark.model3.json',              panRate: 0.1,  voice: 'am_puck', ttsProvider: 'elevenlabs', elevenLabsVoiceId: 'bTrXJpbeuC5KgriLhQeC' },
+  { id: 'natori',  name: 'Natori',  path: '/models/Natori/Natori.model3.json',          panRate: 0.30, voice: 'am_michael', ttsProvider: 'elevenlabs', elevenLabsVoiceId: 'cymHWdiF8WjUCg6vvFxx' },
+  { id: 'wanko',   name: 'Wanko',   path: '/models/Wanko/Wanko.model3.json',            panRate: 0.005, voice: 'am_adam', ttsProvider: 'elevenlabs', elevenLabsVoiceId: 'GsfuR3Wo2BACoxELWyEF' },
 ]
 
 function fitModel(model, screenW, screenH) {
@@ -30,7 +30,7 @@ function App() {
   const containerRef = useRef(null)
   const appRef = useRef(null)
   const modelRef = useRef(null)
-  const disconnectRef = useRef(null)
+  const bridgeRef = useRef(null)
   const zoomRef = useRef(1)
   const baseScaleRef = useRef(0.25)
   const [activeModel, setActiveModel] = useState(MODELS[0])
@@ -41,8 +41,11 @@ function App() {
 
   // Chat state
   const [chatOpen, setChatOpen] = useState(false)
+  const [scriptOpen, setScriptOpen] = useState(false)
   const [messages, setMessages] = useState([])
+  const [scriptMessages, setScriptMessages] = useState([])
   const [inputText, setInputText] = useState('')
+  const [scriptText, setScriptText] = useState('')
   const [sending, setSending] = useState(false)
   const messagesEndRef = useRef(null)
   const audioRef = useRef(null)
@@ -111,8 +114,8 @@ function App() {
     let app = null
     let rafId = null
 
-    disconnectRef.current?.()
-    disconnectRef.current = null
+    bridgeRef.current?.disconnect()
+    bridgeRef.current = null
     zoomRef.current = 1
 
     setStatus(`Loading ${activeModel.name}...`)
@@ -147,7 +150,7 @@ function App() {
         modelRef.current = model
         setStatus(`${activeModel.name}`)
 
-        disconnectRef.current = connectAgentBridge(model, avatarId.current, {
+        bridgeRef.current = connectAgentBridge(model, avatarId.current, {
           onEnvUpdate: (cmd) => {
             const el = document.getElementById('env-layer')
             if (!el) return
@@ -210,6 +213,41 @@ function App() {
   }, [])
 
   // Send chat message
+  // Play TTS audio and sync speaking state to actual audio playback
+  const playTTSAudio = useCallback((audioData) => {
+    if (!audioData?.data) return
+    const rawB64 = audioData.data
+    const byteStr = atob(rawB64)
+    const bytes = new Uint8Array(byteStr.length)
+    for (let i = 0; i < byteStr.length; i++) bytes[i] = byteStr.charCodeAt(i)
+    const mimeType = audioData.format === 'mp3' ? 'audio/mpeg' : 'audio/wav'
+    const audioBlob = new Blob([bytes], { type: mimeType })
+    const audioUrl = URL.createObjectURL(audioBlob)
+
+    const audio = audioRef.current
+    if (!audio) return
+
+    // Start speaking state on the bridge
+    bridgeRef.current?.startSpeaking()
+
+    audio.pause()
+    audio.src = audioUrl
+    audio.volume = 0.5
+
+    // Stop speaking when audio actually ends
+    audio.onended = () => {
+      bridgeRef.current?.stopSpeaking()
+      audio.onended = null
+    }
+
+    setTimeout(() => {
+      audio.play().catch((err) => {
+        console.error('[TTS] Audio play failed:', err)
+        bridgeRef.current?.stopSpeaking()
+      })
+    }, 100)
+  }, [])
+
   const sendMessage = useCallback(async () => {
     const text = inputText.trim()
     if (!text || sending) return
@@ -219,43 +257,73 @@ function App() {
     setMessages(prev => [...prev, { role: 'user', text }])
 
     try {
+      const payload = {
+        text,
+        voice: activeModel.voice,
+        ttsProvider: activeModel.ttsProvider,
+        elevenLabsVoiceId: activeModel.elevenLabsVoiceId,
+      }
+      console.log('[Chat] Sending:', JSON.stringify(payload))
       const res = await fetch(`${API_URL}/chat/${avatarId.current}/message`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, voice: activeModel.voice }),
+        body: JSON.stringify(payload),
       })
 
       const data = await res.json()
+      console.log('[Chat] Response:', { reply: data.reply?.slice(0, 50), hasAudio: !!data.audio?.data, error: data.error })
 
       if (!res.ok) throw new Error(data.error || 'Chat failed')
 
       setMessages(prev => [...prev, { role: 'assistant', text: data.reply }])
 
-      // Play audio if available (lipsync is handled via WebSocket by the server)
-      if (data.audio?.data) {
-        const audioBlob = new Blob(
-          [Uint8Array.from(atob(data.audio.data), c => c.charCodeAt(0))],
-          { type: 'audio/wav' }
-        )
-        const audioUrl = URL.createObjectURL(audioBlob)
-        if (audioRef.current) {
-          audioRef.current.src = audioUrl
-          audioRef.current.play().catch(() => {})
-        }
-      }
+      playTTSAudio(data.audio)
     } catch (err) {
       setMessages(prev => [...prev, { role: 'error', text: err.message }])
     } finally {
       setSending(false)
     }
-  }, [inputText, sending])
+  }, [inputText, sending, activeModel])
+
+  // Send script (direct TTS, no LLM)
+  const sendScript = useCallback(async () => {
+    const text = scriptText.trim()
+    if (!text || sending) return
+
+    setScriptText('')
+    setSending(true)
+    setScriptMessages(prev => [...prev, { role: 'script', text }])
+
+    try {
+      const res = await fetch(`${API_URL}/chat/${avatarId.current}/speak`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text,
+          voice: activeModel.voice,
+          ttsProvider: activeModel.ttsProvider,
+          elevenLabsVoiceId: activeModel.elevenLabsVoiceId,
+        }),
+      })
+
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Speak failed')
+
+      playTTSAudio(data.audio)
+    } catch (err) {
+      setScriptMessages(prev => [...prev, { role: 'error', text: err.message }])
+    } finally {
+      setSending(false)
+    }
+  }, [scriptText, sending, activeModel])
 
   const handleKeyDown = useCallback((e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      sendMessage()
+      if (chatOpen) sendMessage()
+      if (scriptOpen) sendScript()
     }
-  }, [sendMessage])
+  }, [sendMessage, sendScript, chatOpen, scriptOpen])
 
   return (
     <div className="app">
@@ -263,18 +331,25 @@ function App() {
       <div className="viewport" ref={containerRef} />
 
       {/* Hidden audio element for TTS playback */}
-      <audio ref={audioRef} style={{ display: 'none' }} />
+      <audio ref={audioRef} style={{ position: 'absolute', opacity: 0, pointerEvents: 'none' }} />
 
       {/* Bottom bar */}
-      <div className={`bottom-bar ${chatOpen ? 'chat-mode' : ''}`}>
+      <div className="bottom-bar">
         <div className="status-name">{status}</div>
         <div className="bottom-bar-buttons">
           <button
             className={`bar-btn ${chatOpen ? 'active' : ''}`}
-            onClick={() => setChatOpen(o => !o)}
+            onClick={() => { setChatOpen(o => !o); setScriptOpen(false) }}
             title="Chat"
           >
             {chatOpen ? '\u2715' : '\u{1F4AC}'}
+          </button>
+          <button
+            className={`bar-btn ${scriptOpen ? 'active' : ''}`}
+            onClick={() => { setScriptOpen(o => !o); setChatOpen(false) }}
+            title="Script"
+          >
+            {scriptOpen ? '\u2715' : '\u{1F4DD}'}
           </button>
           <button
             className="bar-btn"
@@ -313,6 +388,38 @@ function App() {
             className="chat-send"
             onClick={sendMessage}
             disabled={sending || !inputText.trim()}
+          >
+            {sending ? '...' : '\u2191'}
+          </button>
+        </div>
+      </div>
+
+      {/* Script panel */}
+      <div className={`chat-panel ${scriptOpen ? 'open' : ''}`}>
+        <div className="chat-messages">
+          {scriptMessages.length === 0 && (
+            <div className="chat-empty">Tell {activeModel.name} what to say...</div>
+          )}
+          {scriptMessages.map((msg, i) => (
+            <div key={i} className={`chat-msg chat-msg-${msg.role}`}>
+              <span className="chat-msg-text">{msg.text}</span>
+            </div>
+          ))}
+        </div>
+        <div className="chat-input-row">
+          <input
+            type="text"
+            className="chat-input"
+            placeholder={`Tell ${activeModel.name} what to say...`}
+            value={scriptText}
+            onChange={e => setScriptText(e.target.value)}
+            onKeyDown={handleKeyDown}
+            disabled={sending}
+          />
+          <button
+            className="chat-send"
+            onClick={sendScript}
+            disabled={sending || !scriptText.trim()}
           >
             {sending ? '...' : '\u2191'}
           </button>
