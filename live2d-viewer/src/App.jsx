@@ -49,10 +49,55 @@ function App() {
   const [sending, setSending] = useState(false)
   const messagesEndRef = useRef(null)
   const audioRef = useRef(null)
+  const bgmRef = useRef(null)
+  const [bgmPlaying, setBgmPlaying] = useState(false)
+  const [bgmVolume, setBgmVolume] = useState(0.15)
+  const bgmTrackIndex = useRef(0)
+
+  const BGM_TRACKS = [
+    '/audio/lofi-bgm.mp3',
+    '/audio/Chill A.mp3',
+    '/audio/Chill Beat.mp3',
+    '/audio/Chill Air.mp3',
+    '/audio/Chill Breathe.mp3',
+    '/audio/Chill Cool NIght.mp3',
+    '/audio/Chill Dark.mp3',
+  ]
 
   const avatarId = useRef(
     new URLSearchParams(window.location.search).get('id') || 'default'
   )
+
+  // Shuffle to next track when current one ends
+  useEffect(() => {
+    const bgm = bgmRef.current
+    if (!bgm) return
+    const onEnded = () => {
+      bgmTrackIndex.current = (bgmTrackIndex.current + 1) % BGM_TRACKS.length
+      bgm.src = BGM_TRACKS[bgmTrackIndex.current]
+      bgm.play().catch(() => {})
+    }
+    bgm.addEventListener('ended', onEnded)
+    return () => bgm.removeEventListener('ended', onEnded)
+  }, [])
+
+  const toggleBgm = useCallback(() => {
+    const bgm = bgmRef.current
+    if (!bgm) return
+    if (bgmPlaying) {
+      bgm.pause()
+      setBgmPlaying(false)
+    } else {
+      bgm.volume = bgmVolume
+      bgm.play().then(() => setBgmPlaying(true)).catch(() => {})
+    }
+  }, [bgmPlaying, bgmVolume])
+
+  const handleBgmVolume = useCallback((e) => {
+    const vol = parseFloat(e.target.value)
+    setBgmVolume(vol)
+    if (bgmRef.current) bgmRef.current.volume = vol
+  }, [])
 
   // Auto-scroll chat
   useEffect(() => {
@@ -332,6 +377,7 @@ function App() {
 
       {/* Hidden audio element for TTS playback */}
       <audio ref={audioRef} style={{ position: 'absolute', opacity: 0, pointerEvents: 'none' }} />
+      <audio ref={bgmRef} src="/audio/lofi-bgm.mp3" preload="auto" />
 
       {/* Bottom bar */}
       <div className="bottom-bar">
@@ -351,6 +397,27 @@ function App() {
           >
             {scriptOpen ? '\u2715' : '\u{1F4DD}'}
           </button>
+          <div className="bgm-controls">
+            <button
+              className={`bar-btn ${bgmPlaying ? 'active' : ''}`}
+              onClick={toggleBgm}
+              title="Background music"
+            >
+              {bgmPlaying ? '\u{1F50A}' : '\u{1F507}'}
+            </button>
+            {bgmPlaying && (
+              <input
+                type="range"
+                className="bgm-slider"
+                min="0"
+                max="0.5"
+                step="0.01"
+                value={bgmVolume}
+                onChange={handleBgmVolume}
+                title={`Volume: ${Math.round(bgmVolume * 200)}%`}
+              />
+            )}
+          </div>
           <button
             className="bar-btn"
             onClick={() => setPickerOpen(o => !o)}

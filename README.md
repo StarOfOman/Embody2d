@@ -128,8 +128,13 @@ Open http://localhost:3000
 
 - **Chat button** (speech bubble icon) — talk to the character via LLM
 - **Script button** (notepad icon) — tell the character exactly what to say
+- **Music button** (speaker icon) — toggle lofi background music with volume slider
 - **Menu button** (hamburger) — switch characters
 - **Scroll wheel** — zoom in (camera pans toward face) / out
+
+### Background Music
+
+7 lofi/chill tracks (CC0/public domain from [FreePD](https://freepd.com)) play in shuffle when the music button is toggled on. Volume slider appears when playing — capped at 50% so it doesn't overpower TTS. Tracks crossfade automatically when one ends.
 
 ### TTS Configuration
 
@@ -243,6 +248,7 @@ live2d-viewer/
 │   └── requirements.txt               # Python dependencies
 ├── public/
 │   ├── Core/                          # Cubism 4 SDK core runtime
+│   ├── audio/                         # 7 lofi BGM tracks (CC0)
 │   └── models/                        # 5 bundled character models
 ├── scripts/
 │   └── start-stream.sh               # Headless Chrome + FFmpeg → RTSP

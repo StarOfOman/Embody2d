@@ -110,6 +110,46 @@ body {
   border-color: var(--accent);
 }
 
+/* ── BGM controls ─────────────────────── */
+
+.bgm-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.bgm-slider {
+  width: 70px;
+  height: 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+.bgm-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  border: 2px solid white;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+}
+
+.bgm-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  border: 2px solid white;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+}
+
 /* ── Chat panel ───────────────────────── */
 
 .chat-panel {
