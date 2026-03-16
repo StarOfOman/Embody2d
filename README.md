@@ -1,6 +1,6 @@
 # Embody2D — Live2D Avatar Pipeline
 
-Lightweight Live2D web renderer with local LLM chat, Kokoro TTS, and real-time lipsync. Drop-in compatible with the [Unreal_Vtuber](https://github.com/its-DeFine/Unreal_Vtuber) orchestrator pipeline — runs as an alternative to Unreal Engine on the same GPU cluster infrastructure.
+Lightweight Live2D web renderer with local LLM chat, ElevenLabs/Kokoro TTS, and real-time lipsync. Drop-in compatible with the [Unreal_Vtuber](https://github.com/its-DeFine/Unreal_Vtuber) orchestrator pipeline — runs as an alternative to Unreal Engine on the same GPU cluster infrastructure.
 
 ## Architecture
 
@@ -14,11 +14,12 @@ Lightweight Live2D web renderer with local LLM chat, Kokoro TTS, and real-time l
 │  └──────────┘        └─────┬─────┘       │  :3000             │    │
 │                            │              └─────────┬──────────┘    │
 │  ┌──────────┐  audio │              │                │
-│  │  Kokoro  │◄───────┘    ┌─────────▼──────────┐    │
-│  │  TTS     │              │  Streamer          │    │
-│  │  :8880   │              │  Chrome + FFmpeg   │    │
-│  └──────────┘              │  → RTSP :8554      │    │
-│                             └────────────────────┘    │
+│  │ElevenLabs│◄───────┤    ┌─────────▼──────────┐    │
+│  │  (cloud) │        │    │  Streamer          │    │
+│  ├──────────┤        │    │  Chrome + FFmpeg   │    │
+│  │  Kokoro  │◄───────┘    │  → RTSP :8554      │    │
+│  │  :8880   │              └────────────────────┘    │
+│  └──────────┘                                         │
 │  ┌──────────┐                                         │
 │  │ Adapters │  ← Unreal_Vtuber orchestrator compat   │
 │  │ :9877    │                                         │
@@ -33,27 +34,32 @@ Lightweight Live2D web renderer with local LLM chat, Kokoro TTS, and real-time l
 User types message
   → API server (:4000)
     → Ollama LLM (:11434) generates reply text
-    → Kokoro TTS (:8880) generates WAV audio from reply
+    → ElevenLabs or Kokoro TTS generates audio
     → Audio amplitude extraction → lipsync frames (30 FPS)
-    → WebSocket → frontend (mouth rig locked to lipsync, idle animations paused)
+    → WebSocket → frontend (mouth params overridden at motion pipeline level)
     → Audio base64 → frontend plays in sync
   = Avatar speaks with synchronized lip movement
 ```
 
-During speech, idle animations are fully paused — lipsync has exclusive control of the mouth rig. When speech ends, idle animations resume.
+Two interaction modes:
+- **Chat** — talk to the character (LLM generates response, TTS speaks it)
+- **Script** — type exactly what the character should say (direct TTS, no LLM)
+
+### Lipsync Priority System
+
+Lipsync wraps the motion manager and expression manager update calls. During speech, mouth parameters (`ParamMouthOpenY`, `ParamMouthForm`) are overwritten immediately after each system writes, but before `core.update()` commits values. This ensures lipsync has priority over motion keyframes and expressions while body/head animations continue normally. Speaking state is tied to actual audio playback via the `ended` event.
 
 ## Characters
 
-6 bundled Cubism 4 models with in-app character picker and scroll-wheel zoom.
+5 bundled Cubism 4 models, each with a unique ElevenLabs voice and Kokoro fallback.
 
-| Character | Type | Motions | Expressions | Notes |
-|---|---|---|---|---|
-| **Haru** | Human (female) | 15 | — | Default character |
-| **Hiyori** | Human (female) | 10 | — | Casual outfit |
-| **Mark** | Human (male) | 6 | — | Business attire |
-| **Natori** | Human (female) | 8 | 11 | Most expressive (angry, smile, sad, surprised, etc.) |
-| **Rice** | Human (female) | 4 | — | Simple/clean design |
-| **Wanko** | Animal (dog) | 12 | — | Cartoon style |
+| Character | Type | Motions | Expressions | ElevenLabs Voice | Kokoro Fallback |
+|---|---|---|---|---|---|
+| **Haru** | Human (female) | 15 | — | Custom (feminine) | af_bella |
+| **Hiyori** | Human (female) | 10 | — | Custom (feminine) | af_sarah |
+| **Mark** | Human (male) | 6 | — | Custom (childish) | am_puck |
+| **Natori** | Human (female) | 8 | 11 | Custom (adult male) | am_michael |
+| **Wanko** | Animal (dog) | 12 | — | Custom (male) | am_adam |
 
 All models sourced from [Live2D/CubismWebSamples](https://github.com/Live2D/CubismWebSamples) under the [Live2D Free Material License](https://www.live2d.com/eula/live2d-free-material-license-agreement_en.html).
 
@@ -65,7 +71,8 @@ All models sourced from [Live2D/CubismWebSamples](https://github.com/Live2D/Cubi
 | Renderer | PixiJS | 6.x |
 | Live2D | pixi-live2d-display (Cubism 4) | 0.4.x |
 | LLM | Ollama / llama.cpp | OpenAI-compatible API |
-| TTS | Kokoro (ONNX) | 82M params, 26 voices |
+| TTS (cloud) | ElevenLabs | turbo v2.5, per-character voices |
+| TTS (local) | Kokoro (ONNX) | 82M params, 26 voices |
 | API Server | Express + WebSocket | 5.x / ws 8.x |
 | Bundler | Vite | 7.x |
 | Streaming | Headless Chrome + FFmpeg | NVENC GPU-accelerated |
@@ -75,8 +82,9 @@ All models sourced from [Live2D/CubismWebSamples](https://github.com/Live2D/Cubi
 ### Prerequisites
 
 - Node.js 18+
-- Python 3.10+ with PyTorch (for Kokoro TTS)
+- Python 3.10+ with PyTorch (for Kokoro TTS fallback)
 - [Ollama](https://ollama.com) (for local LLM)
+- ElevenLabs API key (optional — falls back to Kokoro if not set)
 
 ### 1. Install dependencies
 
@@ -84,20 +92,27 @@ All models sourced from [Live2D/CubismWebSamples](https://github.com/Live2D/Cubi
 cd live2d-viewer
 npm install
 
-# TTS dependencies
+# Kokoro TTS dependencies (optional, for local fallback)
 pip install kokoro-onnx soundfile fastapi uvicorn
 ```
 
-### 2. Pull an LLM model
+### 2. Configure environment
+
+```bash
+cp .env.example .env
+# Edit .env and add your ELEVENLABS_API_KEY
+```
+
+### 3. Pull an LLM model
 
 ```bash
 ollama pull qwen3:1.7b
 ```
 
-### 3. Start all services
+### 4. Start all services
 
 ```bash
-# Terminal 1 — Kokoro TTS (downloads ~310MB model on first run)
+# Terminal 1 — Kokoro TTS (optional, downloads ~310MB model on first run)
 cd live2d-viewer/tts && python server.py
 
 # Terminal 2 — API server
@@ -107,18 +122,20 @@ cd live2d-viewer && node server/index.js
 cd live2d-viewer && npm run dev
 ```
 
-### 4. Use it
+### 5. Use it
 
 Open http://localhost:3000
 
-- Click the **menu button** (bottom right) to switch characters
-- Click the **chat button** to open the chat panel
-- **Scroll wheel** zooms in/out
-- Type a message — the avatar will respond with voice and lipsync
+- **Chat button** (speech bubble icon) — talk to the character via LLM
+- **Script button** (notepad icon) — tell the character exactly what to say
+- **Menu button** (hamburger) — switch characters
+- **Scroll wheel** — zoom in (camera pans toward face) / out
 
-### TTS Voices
+### TTS Configuration
 
-26 voices available — set via `TTS_VOICE` env var or `.env`:
+**ElevenLabs** (cloud, high quality) — set `ELEVENLABS_API_KEY` in `.env`. Each character has a unique voice ID configured in `src/App.jsx`.
+
+**Kokoro** (local, free) — 26 voices available as fallback when ElevenLabs is not configured:
 
 | Prefix | Accent | Gender | Examples |
 |---|---|---|---|
@@ -172,7 +189,13 @@ Control the avatar programmatically on `:4000`:
 ```bash
 # Chat (LLM + TTS + lipsync)
 curl -X POST http://localhost:4000/chat/default/message \
-  -H "Content-Type: application/json" -d '{"text": "Hello!"}'
+  -H "Content-Type: application/json" \
+  -d '{"text": "Hello!", "ttsProvider": "elevenlabs", "elevenLabsVoiceId": "emSmWzY0c0xtx5IFMCVv"}'
+
+# Script (direct TTS, no LLM)
+curl -X POST http://localhost:4000/chat/default/speak \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Say this exactly", "voice": "af_sarah"}'
 
 # Direct expression / motion / lipsync
 curl -X POST http://localhost:4000/avatar/default/expression \
@@ -197,16 +220,16 @@ curl -X POST http://localhost:4000/chat/default/clear
 ```
 live2d-viewer/
 ├── src/
-│   ├── App.jsx                        # Main app — viewport + chat + character picker
-│   ├── App.css                        # UI styles (chat panel, picker tray, zoom)
+│   ├── App.jsx                        # Main app — viewport + chat + script + picker
+│   ├── App.css                        # UI styles (chat, script, picker tray, zoom)
 │   ├── main.jsx                       # React entry point
 │   ├── index.css                      # Global CSS variables
 │   └── live2d/
-│       └── agentBridge.js             # WebSocket client, lipsync engine, motion control
+│       └── agentBridge.js             # WebSocket client, lipsync priority engine
 ├── server/
 │   ├── index.js                       # Express + WS agent API (:4000)
 │   ├── routes/
-│   │   ├── chat.js                    # LLM → TTS → lipsync orchestration
+│   │   ├── chat.js                    # LLM → TTS → lipsync (+ /speak for script mode)
 │   │   ├── avatar.js                  # Expression, motion, lipsync, parameter
 │   │   ├── environment.js             # Background, overlay, reset
 │   │   └── customize.js               # Scale, position, tint, alpha
@@ -220,7 +243,7 @@ live2d-viewer/
 │   └── requirements.txt               # Python dependencies
 ├── public/
 │   ├── Core/                          # Cubism 4 SDK core runtime
-│   └── models/                        # 6 bundled character models
+│   └── models/                        # 5 bundled character models
 ├── scripts/
 │   └── start-stream.sh               # Headless Chrome + FFmpeg → RTSP
 ├── Dockerfile.frontend                # Multi-stage Vite build → serve
@@ -252,7 +275,15 @@ curl http://localhost:9091/health   # Unreal (if configured on 9091)
 Drop a Cubism 4 model folder into `public/models/` and add an entry to the `MODELS` array in `src/App.jsx`:
 
 ```js
-{ id: 'my-model', name: 'My Model', path: '/models/MyModel/MyModel.model3.json' }
+{
+  id: 'my-model',
+  name: 'My Model',
+  path: '/models/MyModel/MyModel.model3.json',
+  panRate: 0.25,                              // zoom-to-face pan speed
+  voice: 'af_sarah',                          // Kokoro fallback voice
+  ttsProvider: 'elevenlabs',                   // or omit for Kokoro only
+  elevenLabsVoiceId: 'your-voice-id-here',    // ElevenLabs voice ID
+}
 ```
 
 Models auto-fit to the viewport. Only `.moc3` version 1-3 (Cubism 4) files are supported.
@@ -262,6 +293,7 @@ Models auto-fit to the viewport. Only `.moc3` version 1-3 (Cubism 4) files are s
 - **Live2D SDK**: Proprietary. Free under 10M JPY (~$69K) annual revenue. [EULA](https://www.live2d.com/en/about/terms/)
 - **Bundled models**: [Live2D Free Material License](https://www.live2d.com/eula/live2d-free-material-license-agreement_en.html)
 - **Kokoro TTS**: Apache 2.0
+- **ElevenLabs**: Commercial API, usage-based pricing
 - **Application code**: This repository's source code is separate from the Live2D SDK and models.
 
 ## References
@@ -271,4 +303,5 @@ Models auto-fit to the viewport. Only `.moc3` version 1-3 (Cubism 4) files are s
 - [pixi-live2d-display](https://github.com/guansss/pixi-live2d-display)
 - [Live2D CubismWebSamples](https://github.com/Live2D/CubismWebSamples) — model source
 - [Kokoro TTS](https://github.com/thewh1teagle/kokoro-onnx) — local text-to-speech
+- [ElevenLabs](https://elevenlabs.io) — cloud text-to-speech
 - [Ollama](https://ollama.com) — local LLM runner
