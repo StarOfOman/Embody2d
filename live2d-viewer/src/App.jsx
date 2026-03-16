@@ -9,12 +9,11 @@ window.PIXI = PIXI
 const API_URL = import.meta.env.VITE_API_URL || ''
 
 const MODELS = [
-  { id: 'haru',    name: 'Haru',    path: '/models/Haru/haru_greeter_t03.model3.json' },
-  { id: 'hiyori',  name: 'Hiyori',  path: '/models/Hiyori/Hiyori.model3.json' },
-  { id: 'mark',    name: 'Mark',    path: '/models/Mark/Mark.model3.json' },
-  { id: 'natori',  name: 'Natori',  path: '/models/Natori/Natori.model3.json' },
-  { id: 'rice',    name: 'Rice',    path: '/models/Rice/Rice.model3.json' },
-  { id: 'wanko',   name: 'Wanko',   path: '/models/Wanko/Wanko.model3.json' },
+  { id: 'haru',    name: 'Haru',    path: '/models/Haru/haru_greeter_t03.model3.json', panRate: 0.30, voice: 'af_bella' },
+  { id: 'hiyori',  name: 'Hiyori',  path: '/models/Hiyori/Hiyori.model3.json',         panRate: 0.30, voice: 'af_sarah' },
+  { id: 'mark',    name: 'Mark',    path: '/models/Mark/Mark.model3.json',              panRate: 0.1,  voice: 'am_puck' },
+  { id: 'natori',  name: 'Natori',  path: '/models/Natori/Natori.model3.json',          panRate: 0.30, voice: 'am_michael' },
+  { id: 'wanko',   name: 'Wanko',   path: '/models/Wanko/Wanko.model3.json',            panRate: 0.005, voice: 'am_adam' },
 ]
 
 function fitModel(model, screenW, screenH) {
@@ -180,10 +179,17 @@ function App() {
     const onWheel = (e) => {
       e.preventDefault()
       const model = modelRef.current
-      if (!model) return
+      if (!model || !app) return
       const delta = e.deltaY > 0 ? 0.9 : 1.1
-      zoomRef.current = Math.max(0.1, Math.min(5, zoomRef.current * delta))
+      zoomRef.current = Math.max(1, Math.min(5, zoomRef.current * delta))
       model.scale.set(baseScaleRef.current * zoomRef.current)
+
+      // Pan upward as we zoom in so the camera targets the face
+      // At zoom 1.0 → centered, at zoom 5.0 → shifted up toward head
+      const centerY = app.screen.height / 2
+      const zoomFactor = zoomRef.current - 1 // 0 at default zoom
+      const panUp = zoomFactor * app.screen.height * (activeModel.panRate || 0.30)
+      model.y = centerY + panUp
     }
     container.addEventListener('wheel', onWheel, { passive: false })
 
@@ -216,7 +222,7 @@ function App() {
       const res = await fetch(`${API_URL}/chat/${avatarId.current}/message`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, voice: activeModel.voice }),
       })
 
       const data = await res.json()

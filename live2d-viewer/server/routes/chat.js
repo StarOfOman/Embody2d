@@ -29,7 +29,7 @@ function getHistory(avatarId) {
  */
 router.post('/:id/message', async (req, res) => {
   const { id } = req.params
-  const { text } = req.body
+  const { text, voice } = req.body
 
   if (!text) return res.status(400).json({ error: 'text is required' })
 
@@ -80,7 +80,7 @@ router.post('/:id/message', async (req, res) => {
       body: JSON.stringify({
         model: TTS_MODEL,
         input: reply,
-        voice: TTS_VOICE,
+        voice: voice || TTS_VOICE,
         response_format: 'wav',
         speed: 1.0,
       }),
